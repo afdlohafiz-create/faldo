@@ -3,3 +3,9 @@ requests
 py3Dmol
 stmol
 matplotlib
+streamlit
+requests
+py3Dmol
+stmol
+matplotlib
+ipython_genutils
