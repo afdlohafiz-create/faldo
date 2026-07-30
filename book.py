@@ -144,17 +144,78 @@ def cari_jurnal_akademik(query, batas_tahun, jumlah_hasil=5):
         return None
     except: return None
 
+# --- FUNGSI PENCARI E-BOOK TERPERBAIKI (GABUNGAN GOOGLE BOOKS & OPEN LIBRARY) ---
 @st.cache_data(ttl=3600)
-def cari_ebook_google(query, jumlah_hasil=6):
-    url = f"https://www.googleapis.com/books/v1/volumes?q={query}&maxResults={jumlah_hasil}"
-    headers = {'User-Agent': 'ChemProAI_EduProject/5.0'}
+def cari_ebook_gabungan(query, jumlah_hasil=6):
+    hasil = []
+    
+    # 1. Pencarian via Google Books API
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            return response.json().get('items', [])
-        return None
-    except:
-        return None
+        url_gb = "https://www.googleapis.com/books/v1/volumes"
+        params_gb = {
+            "q": query,
+            "maxResults": min(max(1, jumlah_hasil), 40),
+            "printType": "books"
+        }
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        res_gb = requests.get(url_gb, params=params_gb, headers=headers, timeout=10)
+        
+        if res_gb.status_code == 200:
+            items = res_gb.json().get('items', [])
+            for item in items:
+                info = item.get('volumeInfo', {})
+                images = info.get('imageLinks', {})
+                cover = images.get('thumbnail') or images.get('smallThumbnail') or 'https://via.placeholder.com/128x192.png?text=No+Cover'
+                if cover.startswith("http://"):
+                    cover = cover.replace("http://", "https://")
+                    
+                hasil.append({
+                    'sumber': 'Google Books',
+                    'judul': info.get('title', 'Judul Tidak Tersedia'),
+                    'subjudul': info.get('subtitle', ''),
+                    'penulis': ", ".join(info.get('authors', ['Penulis Tidak Diketahui'])),
+                    'penerbit': info.get('publisher', 'Penerbit N/A'),
+                    'tahun': info.get('publishedDate', 'Tahun N/A'),
+                    'deskripsi': info.get('description', 'Deskripsi singkat tidak tersedia untuk buku ini.'),
+                    'link': info.get('previewLink') or info.get('infoLink') or '#',
+                    'cover': cover
+                })
+    except Exception:
+        pass
+
+    # 2. Jika hasil Google Books kurang, gunakan Open Library API sebagai fallback
+    if len(hasil) < jumlah_hasil:
+        try:
+            url_ol = "https://openlibrary.org/search.json"
+            params_ol = {"q": query, "limit": jumlah_hasil - len(hasil)}
+            res_ol = requests.get(url_ol, params=params_ol, timeout=10)
+            if res_ol.status_code == 200:
+                docs = res_ol.json().get('docs', [])
+                for doc in docs:
+                    cover_i = doc.get('cover_i')
+                    cover_url = f"https://covers.openlibrary.org/b/id/{cover_i}-M.jpg" if cover_i else "https://via.placeholder.com/128x192.png?text=No+Cover"
+                    
+                    key_path = doc.get('key', '')
+                    link_ol = f"https://openlibrary.org{key_path}" if key_path else "#"
+                    
+                    tahun_list = doc.get('publish_year', [])
+                    tahun_str = str(tahun_list[0]) if tahun_list else "Tahun N/A"
+
+                    hasil.append({
+                        'sumber': 'Open Library',
+                        'judul': doc.get('title', 'Judul Tidak Tersedia'),
+                        'subjudul': '',
+                        'penulis': ", ".join(doc.get('author_name', ['Penulis Tidak Diketahui'])),
+                        'penerbit': ", ".join(doc.get('publisher', ['Penerbit N/A'])[:2]),
+                        'tahun': tahun_str,
+                        'deskripsi': f"Buku terdaftar di Open Library. Bahasa: {', '.join(doc.get('language', ['-'])[:3])}",
+                        'link': link_ol,
+                        'cover': cover_url
+                    })
+        except Exception:
+            pass
+
+    return hasil
 
 # --- 4. SIDEBAR (NAVIGASI) ---
 with st.sidebar:
@@ -565,7 +626,7 @@ elif menu == "📚 Pustaka Jurnal Pro":
         else:
             st.error("Masukkan topik riset terlebih dahulu sebelum mencari.")
 
-# --- 8. MODUL PENCARI E-BOOK PRO ---
+# --- 8. MODUL PENCARI E-BOOK PRO (PERBAIKAN FITUR PENCARIAN) ---
 elif menu == "📖 Pencari E-Book Pro":
     st.title("📖 Pustaka E-Book Kimia & Sains Pro")
     st.caption("Cari dan akses referensi e-book terpercaya dari perpustakaan digital global tanpa ribet.")
@@ -573,34 +634,32 @@ elif menu == "📖 Pencari E-Book Pro":
     with st.container(border=True):
         col_search_eb, col_num_eb = st.columns([4, 1])
         with col_search_eb:
-            kata_kunci_eb = st.text_input("Ketik Judul E-Book / Subjek Kimia:", "Organic Chemistry", placeholder="Contoh: Alkanes, Analytical Chemistry, Physical Chemistry...")
+            kata_kunci_eb = st.text_input("Ketik Judul E-Book / Subjek Sains:", "Organic Chemistry", placeholder="Contoh: Alkanes, Bedah Sesar, Analytical Chemistry...")
         with col_num_eb:
             max_hasil_eb = st.number_input("Maksimal Hasil:", 1, 20, 6, key="max_eb")
             
         gas_cari_eb = st.button("🔍 Cari E-Book", type="primary", use_container_width=True, key="btn_eb")
 
-    if gas_cari_eb or kata_kunci_eb:
-        if kata_kunci_eb:
+    if gas_cari_eb:
+        if kata_kunci_eb.strip():
             with st.spinner("⏳ Menjelajahi pustaka e-book digital..."):
-                hasil_ebook = cari_ebook_google(kata_kunci_eb, max_hasil_eb)
+                hasil_ebook = cari_ebook_gabungan(kata_kunci_eb, max_hasil_eb)
                 
             if hasil_ebook:
                 st.success(f"Berhasil menemukan {len(hasil_ebook)} e-book referensi untuk **'{kata_kunci_eb}'**")
                 
                 for i, item in enumerate(hasil_ebook):
-                    info = item.get('volumeInfo', {})
-                    judul_eb = info.get('title', 'Judul Tidak Tersedia')
-                    subjudul_eb = info.get('subtitle', '')
-                    penulis_eb = ", ".join(info.get('authors', ['Penulis Tidak Diketahui']))
-                    penerbit_eb = info.get('publisher', 'Penerbit N/A')
-                    tahun_eb = info.get('publishedDate', 'Tahun N/A')
-                    deskripsi_eb = info.get('description', 'Deskripsi singkat tidak tersedia untuk buku ini.')
-                    preview_link = info.get('previewLink', '#')
-                    
-                    images = info.get('imageLinks', {})
-                    cover_url = images.get('thumbnail', 'https://via.placeholder.com/128x192.png?text=No+Cover')
+                    judul_eb = item['judul']
+                    subjudul_eb = item['subjudul']
+                    penulis_eb = item['penulis']
+                    penerbit_eb = item['penerbit']
+                    tahun_eb = item['tahun']
+                    deskripsi_eb = item['deskripsi']
+                    preview_link = item['link']
+                    cover_url = item['cover']
+                    sumber_db = item['sumber']
 
-                    with st.expander(f"📘 {judul_eb} ({tahun_eb[:4] if len(tahun_eb)>=4 else tahun_eb})"):
+                    with st.expander(f"📘 {judul_eb} ({tahun_eb[:4] if len(tahun_eb)>=4 else tahun_eb}) — [{sumber_db}]"):
                         col_cov, col_info = st.columns([1, 3])
                         with col_cov:
                             st.image(cover_url, use_container_width=True)
@@ -609,18 +668,22 @@ elif menu == "📖 Pencari E-Book Pro":
                                 st.markdown(f"**Subjudul:** *{subjudul_eb}*")
                             st.markdown(f"**Penulis:** {penulis_eb}")
                             st.markdown(f"**Penerbit:** {penerbit_eb}")
-                            st.markdown(f"**Tanggal Terbit:** {tahun_eb}")
+                            st.markdown(f"**Tanggal/Tahun Terbit:** {tahun_eb}")
+                            st.markdown(f"**Sumber Database:** `{sumber_db}`")
                             
                             st.divider()
                             st.markdown(f"**Ringkasan:**")
                             st.caption(deskripsi_eb[:400] + ("..." if len(deskripsi_eb) > 400 else ""))
                             
                             st.write("")
-                            st.link_button("📖 Pratinjau & Baca E-Book", preview_link, use_container_width=True)
+                            if preview_link and preview_link != "#":
+                                st.link_button("📖 Pratinjau & Baca E-Book", preview_link, use_container_width=True)
+                            else:
+                                st.info("Link pratinjau tidak tersedia langsung untuk buku ini.")
             else:
-                st.warning("Maaf, tidak ditemukan e-book yang sesuai. Coba gunakan kata kunci bahasa Inggris yang lebih umum.")
+                st.warning("Maaf, tidak ditemukan e-book yang sesuai. Coba persingkat kata kunci pencarian Anda.")
         else:
-            st.error("Masukkan judul atau topik e-book terlebih dahulu.")
+            st.error("Masukkan judul atau kata kunci e-book terlebih dahulu.")
 
 # --- 9. MODUL PORTAL UJIAN HOTS PRO ---
 elif menu == "🎓 Ujian HOTS Pro":
