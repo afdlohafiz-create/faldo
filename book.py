@@ -144,78 +144,126 @@ def cari_jurnal_akademik(query, batas_tahun, jumlah_hasil=5):
         return None
     except: return None
 
-# --- FUNGSI PENCARI E-BOOK TERPERBAIKI (GABUNGAN GOOGLE BOOKS & OPEN LIBRARY) ---
+
+# --- FUNGSI SUPER PENCARI E-BOOK (QUAD-ENGINE: GOOGLE + OPEN LIBRARY + INTERNET ARCHIVE + SMART FALLBACK) ---
 @st.cache_data(ttl=3600)
-def cari_ebook_gabungan(query, jumlah_hasil=6):
+def cari_ebook_super_gila(query, jumlah_hasil=8):
     hasil = []
-    
-    # 1. Pencarian via Google Books API
+    titles_seen = set()
+
+    def tambah_buku(sumber, judul, subjudul, penulis, penerbit, tahun, deskripsi, link, cover):
+        key_judul = judul.lower().strip()
+        if key_judul not in titles_seen and len(judul) > 2:
+            titles_seen.add(key_judul)
+            hasil.append({
+                'sumber': sumber,
+                'judul': judul,
+                'subjudul': subjudul,
+                'penulis': penulis,
+                'penerbit': penerbit,
+                'tahun': tahun,
+                'deskripsi': deskripsi,
+                'link': link,
+                'cover': cover
+            })
+
+    # 1. ENGINE 1: GOOGLE BOOKS API (Pencarian Fleksibel)
     try:
         url_gb = "https://www.googleapis.com/books/v1/volumes"
-        params_gb = {
-            "q": query,
-            "maxResults": min(max(1, jumlah_hasil), 40),
-            "printType": "books"
-        }
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        res_gb = requests.get(url_gb, params=params_gb, headers=headers, timeout=10)
-        
+        params_gb = {"q": query, "maxResults": min(jumlah_hasil, 20)}
+        headers_gb = {'User-Agent': 'Mozilla/5.0'}
+        res_gb = requests.get(url_gb, params=params_gb, headers=headers_gb, timeout=8)
         if res_gb.status_code == 200:
-            items = res_gb.json().get('items', [])
-            for item in items:
+            for item in res_gb.json().get('items', []):
                 info = item.get('volumeInfo', {})
                 images = info.get('imageLinks', {})
                 cover = images.get('thumbnail') or images.get('smallThumbnail') or 'https://via.placeholder.com/128x192.png?text=No+Cover'
-                if cover.startswith("http://"):
-                    cover = cover.replace("http://", "https://")
-                    
-                hasil.append({
-                    'sumber': 'Google Books',
-                    'judul': info.get('title', 'Judul Tidak Tersedia'),
-                    'subjudul': info.get('subtitle', ''),
-                    'penulis': ", ".join(info.get('authors', ['Penulis Tidak Diketahui'])),
-                    'penerbit': info.get('publisher', 'Penerbit N/A'),
-                    'tahun': info.get('publishedDate', 'Tahun N/A'),
-                    'deskripsi': info.get('description', 'Deskripsi singkat tidak tersedia untuk buku ini.'),
-                    'link': info.get('previewLink') or info.get('infoLink') or '#',
-                    'cover': cover
-                })
+                if cover.startswith("http://"): cover = cover.replace("http://", "https://")
+                
+                tambah_buku(
+                    'Google Books',
+                    info.get('title', 'Judul Tidak Tersedia'),
+                    info.get('subtitle', ''),
+                    ", ".join(info.get('authors', ['Penulis Tidak Diketahui'])),
+                    info.get('publisher', 'Penerbit N/A'),
+                    info.get('publishedDate', 'Tahun N/A'),
+                    info.get('description', 'Deskripsi singkat tidak tersedia.'),
+                    info.get('previewLink') or info.get('infoLink') or '#',
+                    cover
+                )
     except Exception:
         pass
 
-    # 2. Jika hasil Google Books kurang, gunakan Open Library API sebagai fallback
-    if len(hasil) < jumlah_hasil:
-        try:
-            url_ol = "https://openlibrary.org/search.json"
-            params_ol = {"q": query, "limit": jumlah_hasil - len(hasil)}
-            res_ol = requests.get(url_ol, params=params_ol, timeout=10)
-            if res_ol.status_code == 200:
-                docs = res_ol.json().get('docs', [])
-                for doc in docs:
-                    cover_i = doc.get('cover_i')
-                    cover_url = f"https://covers.openlibrary.org/b/id/{cover_i}-M.jpg" if cover_i else "https://via.placeholder.com/128x192.png?text=No+Cover"
-                    
-                    key_path = doc.get('key', '')
-                    link_ol = f"https://openlibrary.org{key_path}" if key_path else "#"
-                    
-                    tahun_list = doc.get('publish_year', [])
-                    tahun_str = str(tahun_list[0]) if tahun_list else "Tahun N/A"
+    # 2. ENGINE 2: INTERNET ARCHIVE API (Jutaan Buku & Teks Bahasa Indonesia / Medis)
+    try:
+        url_ia = "https://archive.org/advancedsearch.php"
+        params_ia = {
+            "q": f"({query}) AND mediatype:(texts)",
+            "fl[]": "identifier,title,creator,publisher,year,description",
+            "rows": jumlah_hasil,
+            "page": "1",
+            "output": "json"
+        }
+        res_ia = requests.get(url_ia, params=params_ia, timeout=8)
+        if res_ia.status_code == 200:
+            docs_ia = res_ia.json().get('response', {}).get('docs', [])
+            for doc in docs_ia:
+                identifier = doc.get('identifier', '')
+                cover_ia = f"https://archive.org/services/img/{identifier}" if identifier else "https://via.placeholder.com/128x192.png?text=Archive+Org"
+                link_ia = f"https://archive.org/details/{identifier}" if identifier else "#"
+                desc = doc.get('description', 'Dokumen / E-Book dari Internet Archive Digital Library.')
+                if isinstance(desc, list): desc = " ".join(desc)
+                
+                tambah_buku(
+                    'Internet Archive',
+                    doc.get('title', 'Judul Tidak Tersedia'),
+                    '',
+                    doc.get('creator', 'Penulis Tidak Diketahui'),
+                    doc.get('publisher', 'Internet Archive Digital Library'),
+                    str(doc.get('year', 'Tahun N/A')),
+                    str(desc)[:300],
+                    link_ia,
+                    cover_ia
+                )
+    except Exception:
+        pass
 
-                    hasil.append({
-                        'sumber': 'Open Library',
-                        'judul': doc.get('title', 'Judul Tidak Tersedia'),
-                        'subjudul': '',
-                        'penulis': ", ".join(doc.get('author_name', ['Penulis Tidak Diketahui'])),
-                        'penerbit': ", ".join(doc.get('publisher', ['Penerbit N/A'])[:2]),
-                        'tahun': tahun_str,
-                        'deskripsi': f"Buku terdaftar di Open Library. Bahasa: {', '.join(doc.get('language', ['-'])[:3])}",
-                        'link': link_ol,
-                        'cover': cover_url
-                    })
-        except Exception:
-            pass
+    # 3. ENGINE 3: OPEN LIBRARY API
+    try:
+        url_ol = "https://openlibrary.org/search.json"
+        params_ol = {"q": query, "limit": jumlah_hasil}
+        res_ol = requests.get(url_ol, params=params_ol, timeout=8)
+        if res_ol.status_code == 200:
+            for doc in res_ol.json().get('docs', []):
+                cover_i = doc.get('cover_i')
+                cover_url = f"https://covers.openlibrary.org/b/id/{cover_i}-M.jpg" if cover_i else "https://via.placeholder.com/128x192.png?text=No+Cover"
+                key_path = doc.get('key', '')
+                link_ol = f"https://openlibrary.org{key_path}" if key_path else "#"
+                tahun_list = doc.get('publish_year', [])
+                
+                tambah_buku(
+                    'Open Library',
+                    doc.get('title', 'Judul Tidak Tersedia'),
+                    '',
+                    ", ".join(doc.get('author_name', ['Penulis Tidak Diketahui'])),
+                    ", ".join(doc.get('publisher', ['Penerbit N/A'])[:2]),
+                    str(tahun_list[0]) if tahun_list else "Tahun N/A",
+                    f"Koleksi Open Library. Bahasa: {', '.join(doc.get('language', ['-'])[:3])}",
+                    link_ol,
+                    cover_url
+                )
+    except Exception:
+        pass
 
-    return hasil
+    # 4. ENGINE 4: SMART FALLBACK (Jika klausa terlalu spesifik, cari kata kunci utama saja)
+    if len(hasil) == 0 and " " in query.strip():
+        kata_kata = query.strip().split()
+        kata_utama = max(kata_kata, key=len) # Ambil kata terpanjang
+        if len(kata_utama) >= 3:
+            return cari_ebook_super_gila(kata_utama, jumlah_hasil)
+
+    return hasil[:jumlah_hasil]
+
 
 # --- 4. SIDEBAR (NAVIGASI) ---
 with st.sidebar:
@@ -626,24 +674,24 @@ elif menu == "📚 Pustaka Jurnal Pro":
         else:
             st.error("Masukkan topik riset terlebih dahulu sebelum mencari.")
 
-# --- 8. MODUL PENCARI E-BOOK PRO (PERBAIKAN FITUR PENCARIAN) ---
+# --- 8. MODUL PENCARI E-BOOK PRO (SUPER QUAD-ENGINE UPDATE) ---
 elif menu == "📖 Pencari E-Book Pro":
-    st.title("📖 Pustaka E-Book Kimia & Sains Pro")
-    st.caption("Cari dan akses referensi e-book terpercaya dari perpustakaan digital global tanpa ribet.")
+    st.title("📖 Pustaka E-Book Kimia, Sains & Kesehatan Pro")
+    st.caption("Cari dan akses referensi e-book terpercaya dari Google Books, Internet Archive & Open Library secara sekaligus.")
     
     with st.container(border=True):
         col_search_eb, col_num_eb = st.columns([4, 1])
         with col_search_eb:
-            kata_kunci_eb = st.text_input("Ketik Judul E-Book / Subjek Sains:", "Organic Chemistry", placeholder="Contoh: Alkanes, Bedah Sesar, Analytical Chemistry...")
+            kata_kunci_eb = st.text_input("Ketik Judul E-Book / Subjek Sains:", "Organic Chemistry", placeholder="Contoh: Bedah Sesar, Alkanes, Analytical Chemistry...")
         with col_num_eb:
-            max_hasil_eb = st.number_input("Maksimal Hasil:", 1, 20, 6, key="max_eb")
+            max_hasil_eb = st.number_input("Maksimal Hasil:", 1, 20, 8, key="max_eb")
             
-        gas_cari_eb = st.button("🔍 Cari E-Book", type="primary", use_container_width=True, key="btn_eb")
+        gas_cari_eb = st.button("🔍 Cari E-Book Super", type="primary", use_container_width=True, key="btn_eb")
 
     if gas_cari_eb:
         if kata_kunci_eb.strip():
-            with st.spinner("⏳ Menjelajahi pustaka e-book digital..."):
-                hasil_ebook = cari_ebook_gabungan(kata_kunci_eb, max_hasil_eb)
+            with st.spinner("⏳ Menjelajahi Quad-Engine Pustaka Digital Global..."):
+                hasil_ebook = cari_ebook_super_gila(kata_kunci_eb, max_hasil_eb)
                 
             if hasil_ebook:
                 st.success(f"Berhasil menemukan {len(hasil_ebook)} e-book referensi untuk **'{kata_kunci_eb}'**")
@@ -668,7 +716,7 @@ elif menu == "📖 Pencari E-Book Pro":
                                 st.markdown(f"**Subjudul:** *{subjudul_eb}*")
                             st.markdown(f"**Penulis:** {penulis_eb}")
                             st.markdown(f"**Penerbit:** {penerbit_eb}")
-                            st.markdown(f"**Tanggal/Tahun Terbit:** {tahun_eb}")
+                            st.markdown(f"**Tahun Terbit:** {tahun_eb}")
                             st.markdown(f"**Sumber Database:** `{sumber_db}`")
                             
                             st.divider()
